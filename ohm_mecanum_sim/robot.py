@@ -1,30 +1,34 @@
+#!/usr/bin/env python3
+
 # ------------------------------------------------------------------------
 # Author:      Stefan May
-# Date:        20.4.2020
+# Date:        01.05.2024
 # Description: Pygame-based robot representation for the mecanum simulator
 # ------------------------------------------------------------------------
 
 import os
+from glob import glob
 import pygame
-import rospy
+import rclpy
+from rclpy.node import Node
 import time, threading
 import operator
 import numpy as np
 from math import cos, sin, pi, sqrt
-from geometry_msgs.msg import PoseStamped, Twist
-from sensor_msgs.msg import Joy
 from std_msgs.msg import Float32MultiArray
+from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
+from sensor_msgs.msg import Joy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from ohm_mecanum_sim.msg import WheelSpeed
+from tf2_ros import TransformBroadcaster
 
-class Robot:
+class Robot(Node):
 
     # Linear velocity in m/s
     _v            = [0, 0]
 
     # Angular velocity in rad/s
-    _omega              = 0
+    _omega              = 0.0
 
     # Radius of circular obstacle region
     _obstacle_radius = 0.45
@@ -38,13 +42,16 @@ class Robot:
     _t_tof              = []
     
     # Minimum angle of laser beams (first beam)
-    _angle_min = -135*pi/180
+    _angle_min = -180*pi/180
 
     # Angle increment between beams
-    _angle_inc = 1*pi/180
+    _angle_inc = 10*pi/180
 
     # Number of laser beams
-    _laserbeams = 271
+    _laserbeams = 36
+
+    # Gaussian Noise in lidar distance in meters
+    _lasernoise = 0.02
 
     # Facing directions of ToF sensors
     _v_face             = []
@@ -65,7 +72,7 @@ class Robot:
     _wheel_radius       = 0.05
 
     # Maximum angular rate of wheels in rad/s
-    _wheel_omega_max    = 10
+    _wheel_omega_max    = 10.0
 
     # Center distance between front and rear wheels
     _wheel_base         = 0.3
@@ -79,7 +86,8 @@ class Robot:
     # Animation counter, this variable is used to switch image representation to pretend a driving robot
     _animation_cnt      = 0
 
-    def __init__(self, x, y, theta, name):
+    def __init__(self, x, y, theta, name, callback_group):
+        super().__init__(name)
         self._initial_coords = [x, y]
         self._initial_theta  = theta
         self._reset = False
@@ -101,7 +109,7 @@ class Robot:
         self._max_speed = self._wheel_omega_max * self._wheel_radius
 
         # Calculate maximum angular rate of robot in rad/s
-        self._max_omega = self._max_speed / (self._wheel_base/2 + self._track/2)
+        self._max_omega = self._max_speed / (self._wheel_base/2.0 + self._track/2.0)
 
         self._angle_max = self._angle_min+(self._laserbeams-1)*self._angle_inc
         if(self._angle_max != -self._angle_min):
@@ -110,15 +118,16 @@ class Robot:
             self._phi_tof.append(i*self._angle_inc+self._angle_min)
             self._t_tof.append(self._offset_tof)
 
+
         for i in range(0, len(self._phi_tof)):
             self._v_face.append((0,0))
             self._pos_tof.append((0,0))
             self._far_tof.append((0,0))
 
         self._name              = name
-        img_path                = os.path.join(os.path.dirname(__file__), "../images/mecanum_ohm_1.png")
-        img_path2               = os.path.join(os.path.dirname(__file__), "../images/mecanum_ohm_2.png")
-        img_path_crash          = os.path.join(os.path.dirname(__file__), "../images/mecanum_crash_2.png")
+        img_path                = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_1.png")
+        img_path2               = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_2.png")
+        img_path_crash          = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_crash_2.png")
         self._symbol            = pygame.image.load(img_path)
         self._symbol2           = pygame.image.load(img_path2)
         self._symbol_crash      = pygame.image.load(img_path_crash)
@@ -127,18 +136,19 @@ class Robot:
         self._img_crash         = pygame.transform.rotozoom(self._symbol_crash, self._theta, self._zoomfactor)
         self._robotrect         = self._img.get_rect()
         self._robotrect.center  = self._coords
-        self._sub_twist         = rospy.Subscriber(str(self._name)+"/cmd_vel", Twist, self.callback_twist)
-        self._sub_joy           = rospy.Subscriber(str(self._name)+"/joy", Joy, self.callback_joy)
-        self._sub_wheelspeed    = rospy.Subscriber(str(self._name)+"/wheel_speed", WheelSpeed, self.callback_wheel_speed)
-        self._pub_pose          = rospy.Publisher(str(self._name)+"/pose", PoseStamped, queue_size=1)
-        self._pub_odom          = rospy.Publisher(str(self._name)+"/odom", Odometry, queue_size=1)
-        self._pub_tof           = rospy.Publisher(str(self._name)+"/tof", Float32MultiArray, queue_size=1)
-        self._pub_laser         = rospy.Publisher(str(self._name)+"/laser", LaserScan, queue_size=1)
+        self._sub_twist         = self.create_subscription(Twist, str(self._name)+"/cmd_vel", self.callback_twist, 1)
+        self._sub_joy           = self.create_subscription(Joy, str(self._name)+"/joy", self.callback_joy, 1)
+        self._pub_pose          = self.create_publisher(PoseStamped, str(self._name)+"/pose", 1)
+        self._pub_odom          = self.create_publisher(Odometry, str(self._name)+"/odom", 1)
+        self._pub_tof           = self.create_publisher(Float32MultiArray, str(self._name)+"/tof", 1)
+        self._pub_laser         = self.create_publisher(LaserScan, str(self._name)+"/laser", 1)
+
+        self.tf_broadcaster     = TransformBroadcaster(self)
 
         self._run               = True
         self._thread            = threading.Timer(0.1, self.trigger)
         self._thread.start()
-        self._timestamp         = rospy.Time.now()#time.process_time()
+        self._timestamp         = self.get_clock().now()
         self._last_command      = self._timestamp
 
     def __del__(self):
@@ -176,16 +186,16 @@ class Robot:
             self.acquire_lock()
 
             # Measure elapsed time
-            timestamp = rospy.Time.now()#time.process_time()
-            elapsed = (timestamp - self._timestamp).to_sec()
+            timestamp = self.get_clock().now()
+            elapsed = (timestamp - self._timestamp).nanoseconds * 1e-9
             self._timestamp = timestamp
 
             # Check, whether commands arrived recently
             last_command_arrival = timestamp - self._last_command
-            if last_command_arrival.to_sec() > 0.5:
-                self._v[0] = 0
-                self._v[1] = 0
-                self._omega = 0
+            if last_command_arrival.nanoseconds * 1e-9 > 0.5:
+                self._v[0] = 0.0
+                self._v[1] = 0.0
+                self._omega = 0.0
 
             # Change orientation
             self._theta += self._omega * elapsed
@@ -201,26 +211,41 @@ class Robot:
             self._coords[0] += v[0]  * elapsed
             self._coords[1] += v[1]  * elapsed
 
-            # Publish pose
+            # # Publish pose
             p = PoseStamped()
-            p.header.frame_id = "pose"
-            p.header.stamp = self._timestamp
+            p.header.frame_id = "map"
+            p.header.stamp = self._timestamp.to_msg()
             p.pose.position.x = self._coords[0]
             p.pose.position.y = self._coords[1]
-            p.pose.position.z = 0
+            p.pose.position.z = 0.0
             p.pose.orientation.w = cos(self._theta/2.0)
-            p.pose.orientation.x = 0
-            p.pose.orientation.y = 0
+            p.pose.orientation.x = 0.0
+            p.pose.orientation.y = 0.0
             p.pose.orientation.z = sin(self._theta/2.0)
             self._pub_pose.publish(p)
 
+            t = TransformStamped()
+            t.header.stamp = self._timestamp.to_msg()
+            t.header.frame_id = 'map'
+            t.child_frame_id = 'base_link'
+            t.transform.translation.x = p.pose.position.x
+            t.transform.translation.y = p.pose.position.y
+            t.transform.translation.z = 0.0
+            t.transform.rotation.x = p.pose.orientation.x
+            t.transform.rotation.y = p.pose.orientation.y
+            t.transform.rotation.z = p.pose.orientation.z
+            t.transform.rotation.w = p.pose.orientation.w
+
+            # Send the transformation
+            self.tf_broadcaster.sendTransform(t)
+
             # Publish odometry
             o = Odometry()
-            o.header.frame_id ="odom"
-            o.header.stamp = self._timestamp
+            o.header.stamp = self._timestamp.to_msg()
+            o.header.frame_id ="map"
+            o.child_frame_id = "base_link"
             o.pose.pose.position = p.pose.position
             o.pose.pose.orientation = p.pose.orientation
-            o.child_frame_id = "base_link"
             o.twist.twist.linear.x = v[0];
             o.twist.twist.linear.y = v[1];
             o.twist.twist.angular.z = self._omega;
@@ -241,8 +266,8 @@ class Robot:
         self._pub_tof.publish(msg)
 
         scan = LaserScan()
-        scan.header.stamp = self._timestamp
-        scan.header.frame_id = "laser"
+        scan.header.stamp = self._timestamp.to_msg()
+        scan.header.frame_id = "base_link"
         scan.angle_min = self._angle_min
         scan.angle_max = self._angle_max
         scan.angle_increment = self._angle_inc
@@ -252,7 +277,7 @@ class Robot:
         scan.ranges = []
         scan.intensities = []
         for i in range(0, self._laserbeams):
-            scan.ranges.append(distances[i])
+            scan.ranges.append(distances[i] + self._lasernoise*np.random.randn())
             scan.intensities.append(1)
         self._pub_laser.publish(scan)
 
@@ -355,16 +380,11 @@ class Robot:
 
     def callback_twist(self, data):
         self.set_velocity(data.linear.x, data.linear.y, data.angular.z)
-        self._last_command = rospy.Time.now()
+        self._last_command = self.get_clock().now()
 
     def callback_joy(self, data):
         self.set_velocity(data.axes[1]*self._max_speed, data.axes[0]*self._max_speed, data.axes[2]*self._max_omega)
-        self._last_command = rospy.Time.now()
-
-    def callback_wheel_speed(self, data):
-        omega = [data.w_front_left, data.w_front_right, data.w_rear_left, data.w_rear_right]
-        self.set_wheel_speed(omega);
-        self._last_command = rospy.Time.now()
+        self._last_command = self.get_clock().now()
 
     def line_length(self, p1, p2):
         return sqrt( (p1[0]-p2[0])*(p1[0]-p2[0]) + (p1[1]-p2[1])*(p1[1]-p2[1]) )
