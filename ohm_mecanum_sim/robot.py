@@ -11,6 +11,7 @@ from glob import glob
 import pygame
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 import time, threading
 import operator
 import numpy as np
@@ -125,9 +126,10 @@ class Robot(Node):
             self._far_tof.append((0,0))
 
         self._name              = name
-        img_path                = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_1.png")
-        img_path2               = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_2.png")
-        img_path_crash          = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_crash_2.png")
+        img_dir                 = os.path.join(get_package_share_directory('ohm_mecanum_sim'), 'images')
+        img_path                = os.path.join(img_dir, "mecanum_ohm_1.png")
+        img_path2               = os.path.join(img_dir, "mecanum_ohm_2.png")
+        img_path_crash          = os.path.join(img_dir, "mecanum_crash_2.png")
         self._symbol            = pygame.image.load(img_path)
         self._symbol2           = pygame.image.load(img_path2)
         self._symbol_crash      = pygame.image.load(img_path_crash)
