@@ -1,0 +1,7 @@
+# example_params.yaml
+ohm_mecanum_sim:
+  ros__parameters:
+    robot_names: ["robot1", "robot2", "robot3"]
+    robot_x: [2.0, 5.0, 8.0]
+    robot_y: [2.0, 2.0, 2.0]
+    robot_theta: [0.0, 0.0, 3.14]
