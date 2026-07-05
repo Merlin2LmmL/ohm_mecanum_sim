@@ -1,7 +1,32 @@
-# example_params.yaml
 ohm_mecanum_sim:
   ros__parameters:
-    robot_names: ["robot1", "robot2", "robot3"]
-    robot_x: [2.0, 5.0, 8.0]
-    robot_y: [2.0, 2.0, 2.0]
-    robot_theta: [0.0, 0.0, 3.14]
+    screen_width: 3200
+    screen_height: 1800
+    outer_border: 5
+    inner_border: 600
+    robot_names: ["robot1", "robot2"]
+    robot_x: [2.0, 5.0]
+    robot_y: [2.0, 2.0]
+    robot_theta: [0.0, 3.14]
+
+robot1:
+  ros__parameters:
+    laserbeams: 36
+    lasernoise: 0.02
+    laser_range: 8.0
+    wheel_radius: 0.05
+    wheel_omega_max: 10.0
+    wheel_base: 0.3
+    track: 0.2
+    zoomfactor: 1.0
+
+robot2:
+  ros__parameters:
+    laserbeams: 72
+    lasernoise: 0.01
+    laser_range: 10.0
+    wheel_radius: 0.0525
+    wheel_omega_max: 1.2
+    wheel_base: 0.36
+    track: 0.24
+    zoomfactor: 1.2

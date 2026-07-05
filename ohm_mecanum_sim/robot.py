@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 # ------------------------------------------------------------------------
-# Author:      Stefan May
-# Date:        01.05.2024
-# Description: Pygame-based robot representation for the mecanum simulator
+# Original Author: Stefan May
+# Modifications:   Merlin Ortner (2026)
+# Date:            01.05.2024 (original), modified 04.07.2026
+# Description:     Pygame-based robot representation for the mecanum simulator
 # ------------------------------------------------------------------------
 
 import os
@@ -11,6 +12,7 @@ from glob import glob
 import pygame
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 import time, threading
 import operator
 import numpy as np
@@ -24,64 +26,11 @@ from tf2_ros import TransformBroadcaster
 
 class Robot(Node):
 
-    # Linear velocity in m/s
-    _v            = [0, 0]
-
-    # Angular velocity in rad/s
-    _omega              = 0.0
-
     # Radius of circular obstacle region
     _obstacle_radius = 0.45
 
-    # Angle of facing direction
-    #_phi_tof            = [0, pi, pi/2, -pi/2, pi/8, -pi/8, pi+pi/8, pi-pi/8]
-    _phi_tof            = []
-
-    # Translation of ToF sensor in facing direction
-    #_t_tof              = (0.4, 0.4, 0.2, 0.2, 0.45, 0.45, 0.45, 0.45)        
-    _t_tof              = []
-    
-    # Minimum angle of laser beams (first beam)
-    _angle_min = -180*pi/180
-
-    # Angle increment between beams
-    _angle_inc = 10*pi/180
-
-    # Number of laser beams
-    _laserbeams = 36
-
-    # Gaussian Noise in lidar distance in meters
-    _lasernoise = 0.02
-
-    # Facing directions of ToF sensors
-    _v_face             = []
-
-    # Positions of ToF sensors
-    _pos_tof            = []
-
-    # Point along line of sight in the farest distance
-    _far_tof            = []
-    
-    # Range of ToF sensors
-    _rng_tof            = 8.0
-
     # Offset of ToF sensors from the kinematic centre
     _offset_tof         = 0.2
-
-    # Radius of wheels
-    _wheel_radius       = 0.05
-
-    # Maximum angular rate of wheels in rad/s
-    _wheel_omega_max    = 10.0
-
-    # Center distance between front and rear wheels
-    _wheel_base         = 0.3
-
-    # Distance between left and right wheels
-    _track              = 0.2
-
-    # Zoomfactor of image representation
-    _zoomfactor         = 1.0
 
     # Animation counter, this variable is used to switch image representation to pretend a driving robot
     _animation_cnt      = 0
@@ -94,6 +43,57 @@ class Robot(Node):
         self._coords = [x, y]
         self._theta = theta
         self._lock = threading.Lock()
+
+        # Linear velocity in m/s, angular velocity in rad/s.
+        # Instance attributes, not class attributes: _v is a mutable list and
+        # trigger() mutates it in place, so a class-level default would be
+        # shared (and silently corrupted) across every spawned robot.
+        self._v     = [0, 0]
+        self._omega = 0.0
+
+        # ------------------------------------------------------------
+        # Per-robot configuration, declared as ROS parameters so each
+        # robot can be tuned independently via a params file, under
+        # this robot's own node name (i.e. its "name" / namespace).
+        # ------------------------------------------------------------
+        self.declare_parameter("laserbeams", 36)
+        self.declare_parameter("lasernoise", 0.02)
+        self.declare_parameter("laser_range", 8.0)
+        self.declare_parameter("wheel_radius", 0.05)
+        self.declare_parameter("wheel_omega_max", 10.0)
+        self.declare_parameter("wheel_base", 0.3)
+        self.declare_parameter("track", 0.2)
+        self.declare_parameter("zoomfactor", 1.0)
+        self.declare_parameter("image_normal", "mecanum_ohm_1.png")
+        self.declare_parameter("image_alt", "mecanum_ohm_2.png")
+        self.declare_parameter("image_crash", "mecanum_crash_2.png")
+        self.declare_parameter("joy_axis_x", 1)
+        self.declare_parameter("joy_axis_y", 0)
+        self.declare_parameter("joy_axis_omega", 2)
+        self.declare_parameter("publish_ground_truth", True)
+
+        self._laserbeams            = self.get_parameter("laserbeams").value
+        self._lasernoise            = self.get_parameter("lasernoise").value
+        self._rng_tof               = self.get_parameter("laser_range").value
+        self._wheel_radius          = self.get_parameter("wheel_radius").value
+        self._wheel_omega_max       = self.get_parameter("wheel_omega_max").value
+        self._wheel_base            = self.get_parameter("wheel_base").value
+        self._track                 = self.get_parameter("track").value
+        self._zoomfactor            = self.get_parameter("zoomfactor").value
+        self._publish_ground_truth  = self.get_parameter("publish_ground_truth").value
+        image_normal                = self.get_parameter("image_normal").value
+        image_alt                   = self.get_parameter("image_alt").value
+        image_crash                 = self.get_parameter("image_crash").value
+        
+
+        # Instance-level ToF/laser bookkeeping. Must be fresh lists per
+        # instance (see module docstring above): appending onto a class
+        # attribute here would leak state between robots.
+        self._phi_tof   = []
+        self._t_tof     = []
+        self._v_face    = []
+        self._pos_tof   = []
+        self._far_tof   = []
 
         # Matrix of kinematic concept
         lxly = (self._wheel_base/2 + self._track/2) / self._wheel_radius
@@ -111,9 +111,14 @@ class Robot(Node):
         # Calculate maximum angular rate of robot in rad/s
         self._max_omega = self._max_speed / (self._wheel_base/2.0 + self._track/2.0)
 
+        # Distribute laser beams evenly around the full circle. For N beams
+        # spanning 360 degrees, angle_max is one increment short of -angle_min
+        # by construction (fencepost), so unlike the original code there is
+        # nothing to warn about here.
+        self._angle_min = -pi
+        self._angle_inc = 2*pi/self._laserbeams
         self._angle_max = self._angle_min+(self._laserbeams-1)*self._angle_inc
-        if(self._angle_max != -self._angle_min):
-            print("Warning: laserbeams should be symmetric. angle_min = " + str(self._angle_min) + ", angle_max = " + str(self._angle_max))
+
         for i in range(0, self._laserbeams):
             self._phi_tof.append(i*self._angle_inc+self._angle_min)
             self._t_tof.append(self._offset_tof)
@@ -125,9 +130,10 @@ class Robot(Node):
             self._far_tof.append((0,0))
 
         self._name              = name
-        img_path                = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_1.png")
-        img_path2               = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_ohm_2.png")
-        img_path_crash          = os.path.join(os.path.dirname(__file__), "../../../install/ohm_mecanum_sim/share/ohm_mecanum_sim/images/mecanum_crash_2.png")
+        image_dir               = os.path.join(get_package_share_directory("ohm_mecanum_sim"), "images")
+        img_path                = os.path.join(image_dir, image_normal)
+        img_path2               = os.path.join(image_dir, image_alt)
+        img_path_crash          = os.path.join(image_dir, image_crash)
         self._symbol            = pygame.image.load(img_path)
         self._symbol2           = pygame.image.load(img_path2)
         self._symbol_crash      = pygame.image.load(img_path_crash)
@@ -223,21 +229,22 @@ class Robot(Node):
             p.pose.orientation.y = 0.0
             p.pose.orientation.z = sin(self._theta/2.0)
             self._pub_pose.publish(p)
+            
+            if self._publish_ground_truth:
+                t = TransformStamped()
+                t.header.stamp = self._timestamp.to_msg()
+                t.header.frame_id = 'map'
+                t.child_frame_id = 'base_link'
+                t.transform.translation.x = p.pose.position.x
+                t.transform.translation.y = p.pose.position.y
+                t.transform.translation.z = 0.0
+                t.transform.rotation.x = p.pose.orientation.x
+                t.transform.rotation.y = p.pose.orientation.y
+                t.transform.rotation.z = p.pose.orientation.z
+                t.transform.rotation.w = p.pose.orientation.w
 
-            t = TransformStamped()
-            t.header.stamp = self._timestamp.to_msg()
-            t.header.frame_id = 'map'
-            t.child_frame_id = 'base_link'
-            t.transform.translation.x = p.pose.position.x
-            t.transform.translation.y = p.pose.position.y
-            t.transform.translation.z = 0.0
-            t.transform.rotation.x = p.pose.orientation.x
-            t.transform.rotation.y = p.pose.orientation.y
-            t.transform.rotation.z = p.pose.orientation.z
-            t.transform.rotation.w = p.pose.orientation.w
-
-            # Send the transformation
-            self.tf_broadcaster.sendTransform(t)
+                # Send the transformation
+                self.tf_broadcaster.sendTransform(t)
 
             # Publish odometry
             o = Odometry()
@@ -383,7 +390,20 @@ class Robot(Node):
         self._last_command = self.get_clock().now()
 
     def callback_joy(self, data):
-        self.set_velocity(data.axes[1]*self._max_speed, data.axes[0]*self._max_speed, data.axes[2]*self._max_omega)
+        axes = data.axes
+
+        axis_x = self.get_parameter("joy_axis_x").value
+        axis_y = self.get_parameter("joy_axis_y").value
+        axis_omega = self.get_parameter("joy_axis_omega").value
+
+        def safe_axis(i):
+            return axes[i] if i < len(axes) else 0.0
+
+        vx = safe_axis(axis_x) * self._max_speed
+        vy = safe_axis(axis_y) * self._max_speed
+        omega = safe_axis(axis_omega) * self._max_omega
+
+        self.set_velocity(vx, vy, omega)
         self._last_command = self.get_clock().now()
 
     def line_length(self, p1, p2):

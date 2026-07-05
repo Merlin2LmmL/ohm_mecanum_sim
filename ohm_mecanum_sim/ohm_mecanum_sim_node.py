@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # ------------------------------------------------------------
 # Original Author: Stefan May
-# Modifications: Merlin Ortner (2026)
-# Date: 01.05.2024 (original), modified 04.07.2026
-# Description: Pygame-based robot simulator application for ROS2
+# Modifications:   Merlin Ortner (2026)
+# Date:             01.05.2024 (original), modified 04.07.2026
+# Description:      Pygame-based robot simulator application for ROS2
 # ------------------------------------------------------------
 import pygame
 import rclpy
