@@ -61,6 +61,7 @@ Each spawned robot is itself a node, named after its entry in `robot_names`, and
 | `image_normal` | string | `mecanum_ohm_1.png` | Filename of the primary driving-animation frame |
 | `image_alt` | string | `mecanum_ohm_2.png` | Filename of the alternate driving-animation frame |
 | `image_crash` | string | `mecanum_crash_2.png` | Filename shown after a collision reset |
+| `publish_ground_truth` | boolean | `True` | Publish ground truth transformation |
 
 Image filenames are resolved against the package's installed `images` share directory, so a custom image has to live there (or you point `image_normal`/`image_alt`/`image_crash` at whatever filename you've added to that directory) rather than an arbitrary path on disk.
 
